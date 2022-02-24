@@ -393,6 +393,7 @@ pub mod sources {
             Postgres,
             Bytes,
             Text,
+            Json(String),
         }
 
         impl SourceDataEncoding {
