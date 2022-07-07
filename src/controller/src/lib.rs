@@ -45,7 +45,7 @@ use mz_compute_client::controller::{
     ActiveReplicationResponse, ComputeController, ComputeControllerMut, ComputeControllerState,
     ComputeInstanceId,
 };
-use mz_compute_client::logging::LoggingConfig;
+use mz_compute_client::logging::{LogVariant, LoggingConfig};
 use mz_compute_client::response::{
     ComputeResponse, PeekResponse, ProtoComputeResponse, TailBatch, TailResponse,
 };
@@ -274,6 +274,7 @@ where
         instance_id: ComputeInstanceId,
         replica_id: ReplicaId,
         config: ConcreteComputeInstanceReplicaConfig,
+        log_collections: HashMap<LogVariant, GlobalId>,
     ) -> Result<(), anyhow::Error> {
         assert!(
             self.compute.contains_key(&instance_id),
@@ -285,7 +286,7 @@ where
             ConcreteComputeInstanceReplicaConfig::Remote { replicas } => {
                 let mut compute_instance = self.compute_mut(instance_id).unwrap();
                 let client = ComputeGrpcClient::new_partitioned(replicas.into_iter().collect());
-                compute_instance.add_replica(replica_id, client);
+                compute_instance.add_replica(replica_id, client, log_collections);
             }
             ConcreteComputeInstanceReplicaConfig::Managed {
                 size_config,
@@ -354,9 +355,11 @@ where
                     )
                     .await?;
                 let client = ComputeGrpcClient::new_partitioned(service.addresses("controller"));
-                self.compute_mut(instance_id)
-                    .unwrap()
-                    .add_replica(replica_id, client);
+                self.compute_mut(instance_id).unwrap().add_replica(
+                    replica_id,
+                    client,
+                    log_collections,
+                );
             }
         }
 
