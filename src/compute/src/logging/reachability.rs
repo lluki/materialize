@@ -14,14 +14,16 @@ use std::rc::Rc;
 use std::{collections::HashMap, time::Duration};
 
 use differential_dataflow::operators::arrange::arrangement::Arrange;
+use differential_dataflow::operators::arrange::Arranged;
+use differential_dataflow::AsCollection;
 use mz_expr::{permutation_for_arrangement, MirScalarExpr};
 use timely::communication::Allocate;
 use timely::dataflow::channels::pact::Exchange;
 use timely::dataflow::operators::capture::EventLink;
+
 use timely::logging::WorkerIdentifier;
 
 use mz_compute_client::logging::LoggingConfig;
-use mz_ore::iter::IteratorExt;
 use mz_repr::{Datum, Diff, Row, RowArena, Timestamp};
 use mz_timely_util::activator::RcActivator;
 use mz_timely_util::replay::MzReplay;
@@ -64,8 +66,6 @@ pub fn construct<A: Allocate>(
 
     // A dataflow for multiple log-derived arrangements.
     let traces = worker.dataflow_named("Dataflow: timely reachability logging", move |scope| {
-        use differential_dataflow::collection::AsCollection;
-
         let (logs, token) = Some(linked).mz_replay(
             scope,
             "reachability logs",
@@ -75,7 +75,7 @@ pub fn construct<A: Allocate>(
 
         use timely::dataflow::operators::generic::builder_rc::OperatorBuilder;
 
-        let construct_reachability_unarranged = || {
+        let construct_common = || {
             let mut flatten = OperatorBuilder::new(
                 "Timely Reachability Logging Flatten ".to_string(),
                 scope.clone(),
@@ -122,31 +122,51 @@ pub fn construct<A: Allocate>(
                 )
         };
 
-        let construct_reachability = |key: Vec<_>, value: Vec<_>| {
+        let construct_active = |common: &Arranged<_, _>, key: Vec<_>, value: Vec<_>| {
             let mut row_buf = Row::default();
-            construct_reachability_unarranged().as_collection(
-                move |(update_type, addr, source, port, worker, ts), _| {
-                    let row_arena = RowArena::default();
-                    let update_type = if *update_type { "source" } else { "target" };
-                    row_buf.packer().push_list(
-                        addr.iter()
-                            .chain_one(&source)
-                            .map(|id| Datum::Int64(*id as i64)),
-                    );
-                    let datums = &[
-                        row_arena.push_unary_row(row_buf.clone()),
-                        Datum::Int64(*port as i64),
-                        Datum::Int64(*worker as i64),
-                        Datum::String(&update_type),
-                        Datum::from(ts.and_then(|ts| i64::try_from(ts).ok())),
-                    ];
-                    row_buf.packer().extend(key.iter().map(|k| datums[*k]));
-                    let key_row = row_buf.clone();
-                    row_buf.packer().extend(value.iter().map(|k| datums[*k]));
-                    let value_row = row_buf.clone();
-                    (key_row, value_row)
-                },
-            )
+            common.as_collection(move |(update_type, addr, source, port, worker, ts), _| {
+                let row_arena = RowArena::default();
+                let update_type = if *update_type { "source" } else { "target" };
+                row_buf.packer().push_list(
+                    addr.iter()
+                        .chain_one(&source)
+                        .map(|id| Datum::Int64(*id as i64)),
+                );
+                let datums = &[
+                    row_arena.push_unary_row(row_buf.clone()),
+                    Datum::Int64(*port as i64),
+                    Datum::Int64(*worker as i64),
+                    Datum::String(&update_type),
+                    Datum::from(ts.and_then(|ts| i64::try_from(ts).ok())),
+                ];
+                row_buf.packer().extend(key.iter().map(|k| datums[*k]));
+                let key_row = row_buf.clone();
+                row_buf.packer().extend(value.iter().map(|k| datums[*k]));
+                let value_row = row_buf.clone();
+                (key_row, value_row)
+            })
+        };
+
+        let construct_sinked = |common: &Arranged<_, _>| {
+            let mut row_buf = Row::default();
+            common.as_collection(move |(update_type, addr, source, port, worker, ts), _| {
+                let row_arena = RowArena::default();
+                let update_type = if *update_type { "source" } else { "target" };
+                row_buf.packer().push_list(
+                    addr.iter()
+                        .chain_one(&source)
+                        .map(|id| Datum::Int64(*id as i64)),
+                );
+                let datums = &[
+                    row_arena.push_unary_row(row_buf.clone()),
+                    Datum::Int64(*port as i64),
+                    Datum::Int64(*worker as i64),
+                    Datum::String(&update_type),
+                    Datum::from(ts.and_then(|ts| i64::try_from(ts).ok())),
+                ];
+                row_buf.packer().extend(datums);
+                row_buf.clone()
+            })
         };
 
         // Restrict results by those logs that are meant to be active.
@@ -154,7 +174,9 @@ pub fn construct<A: Allocate>(
 
         let mut result = std::collections::HashMap::new();
         for variant in logs {
-            if config.active_logs.contains_key(&variant) {
+            let is_active = config.active_logs.contains_key(&variant);
+            let is_sinked = config.sink_logs.contains_key(&variant);
+            if is_active || is_sinked {
                 let key = variant.index_by();
                 let (_, value) = permutation_for_arrangement::<HashMap<_, _>>(
                     &key.iter()
@@ -163,43 +185,43 @@ pub fn construct<A: Allocate>(
                         .collect::<Vec<_>>(),
                     variant.desc().arity(),
                 );
-                let updates = construct_reachability(key.clone(), value);
 
-                let trace = updates
-                    .arrange_named::<RowSpine<_, _, _, _>>(&format!("Arrange {:?}", variant))
-                    .trace;
-                result.insert(variant.clone(), (trace, Rc::clone(&token)));
-            }
+                // Construct common, that will be fed into active and into sinked.
+                let common: Arranged<_, _> = construct_common();
 
-            if let Some((id, meta)) = config.sink_logs.get(&variant) {
-                tracing::debug!("Persisting {:?} to {:?}", &variant, meta);
-                let updates = construct_reachability_unarranged();
-                let mut row_buf = Row::default();
-                persist_sink(
-                    *id,
-                    meta,
-                    compute_state,
-                    &updates.as_collection(
-                        move |(update_type, addr, source, port, worker, ts), _| {
-                            let row_arena = RowArena::default();
-                            let update_type = if *update_type { "source" } else { "target" };
-                            row_buf.packer().push_list(
-                                addr.iter()
-                                    .chain_one(&source)
-                                    .map(|id| Datum::Int64(*id as i64)),
-                            );
-                            let datums = &[
-                                row_arena.push_unary_row(row_buf.clone()),
-                                Datum::Int64(*port as i64),
-                                Datum::Int64(*worker as i64),
-                                Datum::String(&update_type),
-                                Datum::from(ts.and_then(|ts| i64::try_from(ts).ok())),
-                            ];
-                            row_buf.packer().extend(datums);
-                            row_buf.clone()
-                        },
-                    ),
-                );
+                // This is the result of a print_type_of(...), which includes some private structs,
+                // thus doesnt compile (and it's also overly verbose).
+                //
+                //let common: Arranged<
+                //    timely::dataflow::scopes::child::Child<timely::worker::Worker<A>, u64>,
+                //    differential_dataflow::operators::arrange::agent::TraceAgent<
+                //        differential_dataflow::trace::implementations::spine_fueled::Spine<
+                //            rc::Rc<
+                //                differential_dataflow::trace::implementations::ord::OrdValBatch<
+                //                    (bool, Vec<usize>, usize, usize, usize, Option<u64>),
+                //                    (),
+                //                    u64,
+                //                    i64,
+                //                >,
+                //            >,
+                //        >,
+                //    >,
+                //> = construct_common();
+
+                if is_active {
+                    let updates = construct_active(&common, key.clone(), value);
+
+                    let trace = updates
+                        .arrange_named::<RowSpine<_, _, _, _>>(&format!("Arrange {:?}", variant))
+                        .trace;
+                    result.insert(variant.clone(), (trace, Rc::clone(&token)));
+                }
+
+                if is_sinked {
+                    let (id, meta) = config.sink_logs.get(&variant).unwrap();
+                    tracing::debug!("Persisting {:?} to {:?}", &variant, meta);
+                    persist_sink(*id, meta, compute_state, construct_sinked(&common));
+                }
             }
         }
         result
