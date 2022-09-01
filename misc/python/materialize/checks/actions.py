@@ -40,25 +40,30 @@ class UseComputed(Action):
         c.sql(
             """
             DROP CLUSTER REPLICA default.default_replica;
-            CREATE CLUSTER REPLICA default.default_replica REMOTE ['computed_1:2100'];
+            CREATE CLUSTER REPLICA default.default_replica REMOTE ['computed_1:2100', 'computed_2:2100'];
         """
         )
 
 
 class KillComputed(Action):
     def execute(self, c: Composition) -> None:
-        with c.override(Computed(name="computed_1")):
+        with c.override(Computed(name="computed_1"), Computed(name="computed_2")):
             c.kill("computed_1")
+            c.kill("computed_2")
 
 
 class StartComputed(Action):
     def execute(self, c: Composition) -> None:
         with c.override(
             Computed(
-                name="computed_1", options="--workers 1 --process 0 computed_1:2102"
+                name="computed_1", options="--workers 2", peers=["computed_1", "computed_2"]
+            ),
+            Computed(
+                name="computed_2", options="--workers 2", peers=["computed_1", "computed_2"]
             )
         ):
             c.up("computed_1")
+            c.up("computed_2")
 
 
 class RestartMz(Action):
