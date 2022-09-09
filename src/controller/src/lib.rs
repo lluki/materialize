@@ -442,6 +442,8 @@ where
                 .drop_service(&service_name)
                 .await?;
         }
+        let r = self.compute.get(&instance_id).unwrap();
+        r.replicas.send_drop_instance(replica_id);
         let mut compute = self.active_compute(instance_id).unwrap();
         compute.remove_replica(replica_id);
         Ok(())

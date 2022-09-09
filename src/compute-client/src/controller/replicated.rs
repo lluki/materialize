@@ -511,6 +511,23 @@ where
         }
     }
 
+    /// Sends a best effort DropInstance to a specific replica.
+    ///
+    /// Sending DropInstance is different as it usually targets only one replica
+    /// and we know that the replica will be gone afterwards, so we dont have
+    /// to attempt rehydration.
+    ///
+    /// As this method can race with the coordinator we do not propate errors.
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub(super) fn send_drop_instance(&mut self, replica_id: u64) {
+        let _ = self
+            .replicas
+            .get(&replica_id)
+            .unwrap()
+            .command_tx
+            .send(ComputeCommand::DropInstance);
+    }
+
     /// Receives the next response from any replica.
     pub(super) async fn recv(&mut self) -> ActiveReplicationResponse<T> {
         // If we have a pending response, we should send it immediately.

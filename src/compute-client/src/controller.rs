@@ -309,6 +309,7 @@ where
 
     /// Removes an existing instance replica, by name.
     pub fn remove_replica(&mut self, id: ReplicaId) {
+        self.compute.replicas.send(ComputeCommand::DropInstance);
         self.compute.replicas.remove_replica(id);
     }
 
