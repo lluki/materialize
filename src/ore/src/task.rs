@@ -40,8 +40,11 @@
 //! and `spawn_blocking` with [`RuntimeExt::spawn_blocking_named`], adding
 //! naming closures like above.
 
+use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use once_cell::sync::Lazy;
 
 use tokio::runtime::{Handle, Runtime};
 use tokio::task::{self, JoinHandle};
@@ -68,13 +71,34 @@ impl<T> JoinHandleExt<T> for JoinHandle<T> {
     }
 }
 
+static RUNNING_TASKS: Lazy<Mutex<HashMap<i32, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn running_tasks_start(name: String) -> i32 {
+    let mut l = RUNNING_TASKS.lock().unwrap();
+    let new_idx = l.keys().cloned().into_iter().max().unwrap_or(-1) + 1;
+    l.insert(new_idx, name);
+    new_idx
+}
+
+fn running_tasks_end(idx: i32) {
+    let mut l = RUNNING_TASKS.lock().unwrap();
+    l.remove(&idx);
+
+    eprintln!("Dump running tasks:");
+    let mut keys: Vec<i32> = l.keys().cloned().into_iter().collect();
+    keys.sort();
+    for idx in keys {
+        eprintln!("{}: {}", idx, l[&idx]);
+    }
+}
+
 /// Spawns a new asynchronous task with a name.
 ///
 /// See [`tokio::task::spawn`] and the [module][`self`] docs for more
 /// information.
 #[cfg(not(all(tokio_unstable, feature = "task")))]
 #[track_caller]
-pub fn spawn<Fut, Name, NameClosure>(_nc: NameClosure, future: Fut) -> JoinHandle<Fut::Output>
+pub fn spawn<Fut, Name, NameClosure>(nc: NameClosure, future: Fut) -> JoinHandle<Fut::Output>
 where
     Name: AsRef<str>,
     NameClosure: FnOnce() -> Name,
@@ -82,7 +106,13 @@ where
     Fut::Output: Send + 'static,
 {
     #[allow(clippy::disallowed_methods)]
-    tokio::spawn(future)
+    let name: String = nc().as_ref().into();
+    tokio::spawn(async move {
+        let idx = running_tasks_start(name);
+        let res = future.await;
+        running_tasks_end(idx);
+        res
+    })
 }
 
 /// Spawns a new asynchronous task with a name.
