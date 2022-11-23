@@ -84,7 +84,7 @@ use rand::seq::SliceRandom;
 use tokio::runtime::Handle as TokioHandle;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot, watch, OwnedMutexGuard};
-use tracing::{error, info, span, warn, Level};
+use tracing::{debug, error, info, span, warn, Level};
 use uuid::Uuid;
 
 use mz_build_info::BuildInfo;
@@ -561,7 +561,7 @@ impl<S: Append + 'static> Coordinator<S> {
         info!("coordinator init: installing existing objects in catalog");
         let mut privatelink_connections = HashMap::new();
         for entry in &entries {
-            info!(
+            debug!(
                 "coordinator init: installing {} {}",
                 entry.item().typ(),
                 entry.id()
@@ -869,7 +869,7 @@ impl<S: Append + 'static> Coordinator<S> {
             .iter()
             .filter(|entry| entry.is_table() && entry.id().is_system())
         {
-            info!(
+            debug!(
                 "coordinator init: resetting system table {} ({})",
                 self.catalog.resolve_full_name(system_table.name(), None),
                 system_table.id()
@@ -880,7 +880,7 @@ impl<S: Append + 'static> Coordinator<S> {
                 .snapshot(system_table.id(), read_ts)
                 .await
                 .unwrap();
-            info!("coordinator init: table size {}", current_contents.len());
+            debug!("coordinator init: table size {}", current_contents.len());
             let retractions = current_contents
                 .into_iter()
                 .map(|(row, diff)| BuiltinTableUpdate {
