@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::process;
 
 use axum::routing;
+use fail::FailScenario;
 use once_cell::sync::Lazy;
 use tracing::info;
 
@@ -157,6 +158,9 @@ async fn run(args: Args) -> Result<(), anyhow::Error> {
                 .into_make_service(),
         )
     });
+
+    // Initialize fail crate for failpoint support
+    let _failpoint_scenario = FailScenario::setup();
 
     let config = mz_compute::server::Config {
         build_info: &BUILD_INFO,

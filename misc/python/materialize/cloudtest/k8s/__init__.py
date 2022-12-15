@@ -19,6 +19,7 @@ from kubernetes.client import (
     V1ClusterRole,
     V1ConfigMap,
     V1Deployment,
+    V1EnvVar,
     V1Pod,
     V1RoleBinding,
     V1Secret,
@@ -188,12 +189,6 @@ class K8sDeployment(K8sResource):
 class K8sStatefulSet(K8sResource):
     stateful_set: V1StatefulSet
 
-    def __init__(self) -> None:
-        self.stateful_set = self.generate_stateful_set()
-
-    def generate_stateful_set(self) -> V1StatefulSet:
-        assert False
-
     def kind(self) -> str:
         return "statefulset"
 
@@ -209,10 +204,10 @@ class K8sStatefulSet(K8sResource):
         )
 
     def replace(self) -> None:
+        """ Replace kubernetes set with current set value """
         apps_v1_api = self.apps_api()
         name = self.name()
         print(f"Replacing stateful set {name}...")
-        self.stateful_set = self.generate_stateful_set()
         apps_v1_api.replace_namespaced_stateful_set(
             name=name, body=self.stateful_set, namespace=self.namespace()
         )
@@ -220,6 +215,49 @@ class K8sStatefulSet(K8sResource):
         # until the rollout is complete.
         # See https://github.com/kubernetes/kubernetes/issues/79606#issuecomment-779779928
         self.kubectl("rollout", "status", f"statefulset/{name}")
+
+class K8sLoadedStatefulSet(K8sStatefulSet):
+    """ Load a StatefulSet by its name """
+    stateful_set: V1StatefulSet
+
+    def __init__(self, name) -> None:
+        """ Load a StatefulSet by its name """
+        for ss in (
+            self.apps_api().list_stateful_set_for_all_namespaces().items
+        ):
+            assert ss.metadata is not None
+            if ss.metadata.name == name:
+                self.stateful_set = ss
+                return None
+        print(f"StatefulSet with name {name} not found")
+        assert False
+
+    def set_failpoints(self, failpoints):
+        spec = self.stateful_set.spec
+        assert spec is not None
+        assert spec.template.spec is not None
+        env = spec.template.spec.containers[0].env
+        if env is None:
+            env = []
+        env = [x for x in env if x.name != "FAILPOINTS"]
+        env.append(V1EnvVar(name="FAILPOINTS", value=failpoints))
+        spec.template.spec.containers[0].env = env
+        self.replace()
+
+
+class K8sDefinedStatefulSet(K8sStatefulSet):
+    stateful_set: V1StatefulSet
+
+    def __init__(self) -> None:
+        self.stateful_set = self.generate_stateful_set()
+
+    def replace(self) -> None:
+        self.stateful_set = self.generate_stateful_set()
+        super().replace()
+
+    def generate_stateful_set(self) -> V1StatefulSet:
+        assert False
+
 
 
 class K8sConfigMap(K8sResource):

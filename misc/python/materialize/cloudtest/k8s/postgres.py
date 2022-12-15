@@ -31,7 +31,7 @@ from kubernetes.client import (
     V1VolumeMount,
 )
 
-from materialize.cloudtest.k8s import K8sConfigMap, K8sService, K8sStatefulSet
+from materialize.cloudtest.k8s import K8sConfigMap, K8sService, K8sDefinedStatefulSet
 
 
 class PostgresConfigMap(K8sConfigMap):
@@ -71,7 +71,7 @@ class PostgresService(K8sService):
         )
 
 
-class PostgresStatefulSet(K8sStatefulSet):
+class PostgresStatefulSet(K8sDefinedStatefulSet):
     def generate_stateful_set(self) -> V1StatefulSet:
         metadata = V1ObjectMeta(name="postgres", labels={"app": "postgres"})
         label_selector = V1LabelSelector(match_labels={"app": "postgres"})

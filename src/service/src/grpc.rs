@@ -351,6 +351,10 @@ impl VersionCheckExactInterceptor {
 
 impl Interceptor for VersionCheckExactInterceptor {
     fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+        fail::fail_point!("grpc_version_check", |_| {
+            tracing::warn!("grpc_version_check failpoint, returning error");
+            Err(Status::permission_denied("failpoint"))
+        });
         match request.metadata().get(&*VERSION_METADATA_KEY) {
             None => Err(Status::permission_denied(
                 "request missing version metadata",

@@ -31,7 +31,7 @@ from kubernetes.client import (
     V1VolumeMount,
 )
 
-from materialize.cloudtest.k8s import K8sService, K8sStatefulSet
+from materialize.cloudtest.k8s import K8sService, K8sDefinedStatefulSet
 
 
 class EnvironmentdService(K8sService):
@@ -50,7 +50,7 @@ class EnvironmentdService(K8sService):
         )
 
 
-class EnvironmentdStatefulSet(K8sStatefulSet):
+class EnvironmentdStatefulSet(K8sDefinedStatefulSet):
     def __init__(
         self,
         tag: Optional[str] = None,
